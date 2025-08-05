@@ -3,9 +3,10 @@ import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { AppService } from './app.service';
 import { Response } from 'express';
 import { WebhookAuthGuard } from './guards/webhook-auth.guard';
+import { whatsappConfig } from './config/whatsapp.config';
 
 @Controller()
-@UseGuards(ThrottlerGuard)
+// @UseGuards(ThrottlerGuard)
 export class AppController {
   constructor(private readonly appService: AppService) {}
 
@@ -164,19 +165,19 @@ export class AppController {
     return res.send(html);
   }
 
-  @Get('chats')
-  async getChats() {
-    try {
-      const chats = await this.appService.getAllChats();
-      return {
-        success: true,
-        chats: chats
-      };
-    } catch (error) {
-      console.error('Error obteniendo chats:', error);
-      throw new HttpException('Error obteniendo chats', HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-  }
+  // @Get('chats')
+  // async getChats() {
+  //   try {
+  //     const chats = await this.appService.getAllChats();
+  //     return {
+  //       success: true,
+  //       chats: chats
+  //     };
+  //   } catch (error) {
+  //     console.error('Error obteniendo chats:', error);
+  //     throw new HttpException('Error obteniendo chats', HttpStatus.INTERNAL_SERVER_ERROR);
+  //   }
+  // }
 
   @Get('groups')
   async getGroups() {
@@ -230,6 +231,87 @@ export class AppController {
       }
     } catch (error) {
       console.error('Error enviando mensaje de prueba:', error);
+      throw new HttpException('Error interno del servidor', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Post('send-checklist')
+  async sendCheckList(@Body() body: { groupId: string; data: any }) {
+    try {
+      const { groupId, data } = body;
+      
+      if (!groupId) {
+        throw new HttpException('groupId es requerido', HttpStatus.BAD_REQUEST);
+      }
+
+      const message = whatsappConfig.messages.checkList(data);
+      const success = await this.appService.sendWhatsAppMessage(groupId, message);
+      
+      if (success) {
+        return {
+          success: true,
+          message: 'Check-List enviado exitosamente',
+          groupId: groupId
+        };
+      } else {
+        throw new HttpException('Error enviando Check-List', HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+    } catch (error) {
+      console.error('Error enviando Check-List:', error);
+      throw new HttpException('Error interno del servidor', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Post('send-reporte-correctivos')
+  async sendReporteCorrectivos(@Body() body: { groupId: string; data: any }) {
+    try {
+      const { groupId, data } = body;
+      
+      if (!groupId) {
+        throw new HttpException('groupId es requerido', HttpStatus.BAD_REQUEST);
+      }
+
+      const message = whatsappConfig.messages.reporteCorrectivos(data);
+      const success = await this.appService.sendWhatsAppMessage(groupId, message);
+      
+      if (success) {
+        return {
+          success: true,
+          message: 'Reporte de Correctivos enviado exitosamente',
+          groupId: groupId
+        };
+      } else {
+        throw new HttpException('Error enviando Reporte de Correctivos', HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+    } catch (error) {
+      console.error('Error enviando Reporte de Correctivos:', error);
+      throw new HttpException('Error interno del servidor', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Post('send-documentos-legales')
+  async sendDocumentosLegales(@Body() body: { groupId: string; data: any }) {
+    try {
+      const { groupId, data } = body;
+      
+      if (!groupId) {
+        throw new HttpException('groupId es requerido', HttpStatus.BAD_REQUEST);
+      }
+
+      const message = whatsappConfig.messages.documentosLegales(data);
+      const success = await this.appService.sendWhatsAppMessage(groupId, message);
+      
+      if (success) {
+        return {
+          success: true,
+          message: 'Documentos Legales enviado exitosamente',
+          groupId: groupId
+        };
+      } else {
+        throw new HttpException('Error enviando Documentos Legales', HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+    } catch (error) {
+      console.error('Error enviando Documentos Legales:', error);
       throw new HttpException('Error interno del servidor', HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
@@ -1127,13 +1209,14 @@ curl -X POST http://localhost:3000/webhook/airtable \\<br>
 
   @Post('webhook/airtable')
   @UseGuards(WebhookAuthGuard)
-  @Throttle({ default: { limit: 30, ttl: 60000 } }) // 30 requests por minuto para webhooks
+  // @Throttle({ default: { limit: 30, ttl: 60000 } }) // 30 requests por minuto para webhooks
   async handleAirtableWebhook(@Body() data: any) {
     try {
       console.log('Webhook recibido de Airtable:', data);
       
-      // Verificar si el estado es "revisado"
-      if (data.estado === 'revisado' || data.fields?.estado === 'revisado') {
+      // Procesar todos los webhooks que tengan tipoFormulario
+      if (data.tipoFormulario) {
+        console.log('✅ Procesando formulario:', data.tipoFormulario);
         const success = await this.appService.handleVehicleStatusUpdate(data);
         
         if (success) {
@@ -1145,9 +1228,10 @@ curl -X POST http://localhost:3000/webhook/airtable \\<br>
           throw new HttpException('Error enviando mensaje a WhatsApp', HttpStatus.INTERNAL_SERVER_ERROR);
         }
       } else {
+        console.log('⚠️ Webhook sin tipoFormulario, no se procesa');
         return {
           success: true,
-          message: 'Estado no es "revisado", no se envía mensaje'
+          message: 'Webhook recibido pero no se procesa (sin tipoFormulario)'
         };
       }
     } catch (error) {
