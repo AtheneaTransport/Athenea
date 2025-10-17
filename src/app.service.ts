@@ -20,7 +20,17 @@ export class AppService {
 
   private async initializeWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(whatsappConfig.baileys.authPath);
-    this.sock = makeWASocket({ auth: state });
+    this.sock = makeWASocket({
+      auth: state,
+      printQRInTerminal: true,
+      browser: ['Ubuntu', 'Chrome', '22.04.4'],
+      connectTimeoutMs: 60_000,
+      defaultQueryTimeoutMs: 60_000,
+    });
+
+    // Manejar las actualizaciones de credenciales
+    this.sock.ev.on('creds.update', saveCreds);
+    
     this.sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
       if (qr) {
