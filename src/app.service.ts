@@ -20,12 +20,17 @@ export class AppService {
 
   private async initializeWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(whatsappConfig.baileys.authPath);
+    
+    console.log('Iniciando WhatsApp...');
+    
     this.sock = makeWASocket({
       auth: state,
       printQRInTerminal: true,
       browser: ['Ubuntu', 'Chrome', '22.04.4'],
       connectTimeoutMs: 60_000,
       defaultQueryTimeoutMs: 60_000,
+      markOnlineOnConnect: false,
+      version: [2, 2308, 7]
     });
 
     // Manejar las actualizaciones de credenciales
@@ -163,11 +168,46 @@ export class AppService {
   }
 
   async restartConnection(): Promise<void> {
-    this.isConnected = false;
-    this.currentQR = '';
-    if (this.sock) await this.sock.logout();
-    const authPath = path.join(process.cwd(), 'auth_info_baileys');
-    if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
-    setTimeout(() => this.initializeWhatsApp(), 3000);
+    try {
+      console.log('Iniciando proceso de reinicio...');
+      this.isConnected = false;
+      this.currentQR = '';
+
+      // Intentar cerrar la conexión actual de manera segura
+      if (this.sock) {
+        try {
+          console.log('Cerrando conexión actual...');
+          try {
+            await this.sock.logout();
+          } catch (e) {
+            console.log('Error al cerrar sesión:', e.message);
+          }
+          this.sock = null;
+          console.log('Conexión cerrada exitosamente');
+        } catch (error) {
+          console.log('Error al cerrar la conexión:', error.message);
+          // Continuar con el proceso incluso si hay error al cerrar
+        }
+      }
+
+      // Limpiar archivos de autenticación
+      const authPath = path.join(process.cwd(), 'auth_info_baileys');
+      if (fs.existsSync(authPath)) {
+        console.log('Limpiando archivos de autenticación...');
+        fs.rmSync(authPath, { recursive: true, force: true });
+      }
+
+      // Esperar un momento antes de reiniciar
+      console.log('Esperando antes de reiniciar...');
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Reiniciar la conexión
+      console.log('Iniciando nueva conexión...');
+      await this.initializeWhatsApp();
+      console.log('Proceso de reinicio completado');
+    } catch (error) {
+      console.error('Error en el proceso de reinicio:', error);
+      throw new Error(`Error en el proceso de reinicio: ${error.message}`);
+    }
   }
 }
