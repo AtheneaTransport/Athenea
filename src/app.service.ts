@@ -10,7 +10,7 @@ import {
 import { Boom } from '@hapi/boom';
 import * as fs from 'fs';
 import * as path from 'path';
-import { whatsappConfig } from './config/whatsapp.config';
+import { whatsappConfig } from './config/whatsapp.config.js';
 import * as QRCode from 'qrcode';
 import axios from 'axios';
 import P from 'pino';

@@ -1,6 +1,6 @@
 export const whatsappConfig = {
   // ID del grupo de WhatsApp (reemplaza con tu ID real)
-  groupId: process.env.WHATSAPP_GROUP_ID || '120363401785478853@g.us',
+  groupId: process.env.WHATSAPP_GROUP_ID || '120363028147961861@g.us',
   
   // Configuración de Baileys
   baileys: {

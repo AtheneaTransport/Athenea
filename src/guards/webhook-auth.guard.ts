@@ -1,6 +1,6 @@
 import { Injectable, CanActivate, ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { Request } from 'express';
-import { securityConfig } from '../config/security.config';
+import { securityConfig } from '../config/security.config.js';
 
 @Injectable()
 export class WebhookAuthGuard implements CanActivate {

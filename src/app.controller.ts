@@ -1,9 +1,8 @@
 import { Controller, Get, Post, Body, HttpStatus, HttpException, Res, UseGuards } from '@nestjs/common';
-import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
-import { AppService } from './app.service';
+import { AppService } from './app.service.js';
 import { Response } from 'express';
-import { WebhookAuthGuard } from './guards/webhook-auth.guard';
-import { whatsappConfig } from './config/whatsapp.config';
+import { WebhookAuthGuard } from './guards/webhook-auth.guard.js';
+import { whatsappConfig } from './config/whatsapp.config.js';
 
 @Controller()
 // @UseGuards(ThrottlerGuard)
