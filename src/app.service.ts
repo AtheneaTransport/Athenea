@@ -1,117 +1,184 @@
-
 import { Injectable } from '@nestjs/common';
-import { makeWASocket, DisconnectReason, useMultiFileAuthState, WASocket } from '@whiskeysockets/baileys';
+import { 
+  makeWASocket, 
+  DisconnectReason, 
+  useMultiFileAuthState, 
+  WASocket, 
+  proto,
+  fetchLatestBaileysVersion  // 🔹 CRÍTICO: Obtener versión correcta
+} from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as fs from 'fs';
 import * as path from 'path';
 import { whatsappConfig } from './config/whatsapp.config';
 import * as QRCode from 'qrcode';
 import axios from 'axios';
+import P from 'pino';
 
 @Injectable()
 export class AppService {
   private sock: WASocket;
   private isConnected = false;
   private currentQR: string = '';
+  private messageCache = new Map<string, proto.IMessage>();
+  private readonly MAX_CACHE_SIZE = 1000;
 
   constructor() {
-    this.initializeWhatsApp();
+    // Iniciar con delay
+    setTimeout(() => {
+      this.initializeWhatsApp();
+    }, 2000);
   }
 
   private async initializeWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState(whatsappConfig.baileys.authPath);
-    
-    console.log('Iniciando WhatsApp...');
-    
-    this.sock = makeWASocket({
-      auth: state,
-      printQRInTerminal: true,
-      browser: ['Ubuntu', 'Chrome', '22.04.4'],
-      connectTimeoutMs: 60_000,
-      defaultQueryTimeoutMs: 60_000,
-      markOnlineOnConnect: false,
-      version: [2, 2308, 7]
-    });
+    try {
+      // 🔹 PASO 1: Obtener la última versión de Baileys (CRÍTICO)
+      const { version, isLatest } = await fetchLatestBaileysVersion();
+      console.log(`🔄 Usando versión de WA: ${version.join('.')} (¿Es la última? ${isLatest})`);
 
-    // Manejar las actualizaciones de credenciales
-    this.sock.ev.on('creds.update', saveCreds);
-    
-    this.sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-      if (qr) {
-        this.currentQR = qr;
-        console.log('🔐 Código QR generado. Visita: http://localhost:3000/qr');
-      }
-      if (connection === 'close') {
-        const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-        this.isConnected = false;
-        this.currentQR = '';
-        if (shouldReconnect) this.initializeWhatsApp();
-      } else if (connection === 'open') {
-        console.log(whatsappConfig.messages.connectionSuccess);
-        this.isConnected = true;
-        this.currentQR = '';
-        setTimeout(async () => {
-          try {
-            const groups = await this.getGroups();
-            groups.forEach(group => {
-              console.log(`- ${group.name}: ${group.id}`);
-            });
-          } catch (error) {
-            console.log('No se pudieron obtener los grupos:', error.message);
-          }
-        }, 2000);
-      }
-    });
+      // 🔹 PASO 2: Cargar estado de autenticación
+      const { state, saveCreds } = await useMultiFileAuthState(whatsappConfig.baileys.authPath);
+      
+      console.log('🚀 Iniciando conexión con WhatsApp...');
+      
+      // 🔹 PASO 3: Crear socket con configuración MÍNIMA y CORRECTA
+      this.sock = makeWASocket({
+        version, // 🔹 USAR LA VERSIÓN OBTENIDA
+        auth: state,
+        printQRInTerminal: true, // Mantener para debug
+        // 🔹 Browser correcto
+        browser: ['Chrome (Linux)', '', ''],
+        // 🔹 getMessage para caché
+        getMessage: async (key) => {
+          const msgId = `${key.remoteJid}_${key.id}`;
+          return this.messageCache.get(msgId);
+        },
+        // 🔹 Logger silencioso
+        logger: P({ level: 'silent' }),
+      });
 
-    // Detectar mensajes para obtener IDs de grupos
-    this.sock.ev.on('messages.upsert', async (m) => {
-      const msg = m.messages[0];
-      if (!msg.key.fromMe && msg.key.remoteJid?.endsWith('@g.us')) {
-        console.log('🔍 ID del grupo detectado:', msg.key.remoteJid);
-        console.log('📝 Mensaje recibido:', msg.message?.conversation || 'Mensaje multimedia');
+      // Guardar credenciales
+      this.sock.ev.on('creds.update', saveCreds);
+      
+      // Manejo de conexión
+      this.sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
         
-        // Obtener información del grupo
-        try {
-          const groupInfo = await this.sock.groupMetadata(msg.key.remoteJid);
-          console.log('📋 Información del grupo:');
-          console.log(`  - Nombre: ${groupInfo.subject}`);
-          console.log(`  - ID: ${groupInfo.id}`);
-          console.log(`  - Participantes: ${groupInfo.participants?.length || 0}`);
-        } catch (error) {
-          console.log('No se pudo obtener información del grupo:', error.message);
+        if (qr) {
+          this.currentQR = qr;
+          console.log('✅ QR GENERADO - Escanea desde: http://localhost:3000/qr');
         }
-      }
-    });
+        
+        if (connection === 'close') {
+          const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+          this.isConnected = false;
+          this.currentQR = '';
+          
+          console.log(`❌ Conexión cerrada (código: ${statusCode})`);
+          
+          // 🔹 NO reconectar en error 405 - es probable que sea IP bloqueada
+          if (statusCode === 405) {
+            console.log('⚠️ ERROR 405: Tu IP puede estar temporalmente bloqueada por WhatsApp');
+            console.log('💡 SOLUCIONES POSIBLES:');
+            console.log('   1. Espera 30 minutos a 1 hora antes de reintentar');
+            console.log('   2. Cambia tu red (usa hotspot de celular)');
+            console.log('   3. Usa un proxy/VPN');
+            console.log('   4. Borra auth_info_baileys y escanea un QR nuevo');
+            return; // NO RECONECTAR
+          }
+          
+          // Reconectar solo en casos específicos
+          if (statusCode === DisconnectReason.restartRequired) {
+            console.log('🔄 Reinicio requerido...');
+            setTimeout(() => this.initializeWhatsApp(), 3000);
+          } else if (statusCode === DisconnectReason.connectionLost) {
+            console.log('🔄 Conexión perdida, reconectando...');
+            setTimeout(() => this.initializeWhatsApp(), 5000);
+          } else if (statusCode !== DisconnectReason.loggedOut) {
+            console.log('💡 Escanea el QR en: http://localhost:3000/qr');
+          }
+        } else if (connection === 'open') {
+          console.log('✅ ¡CONECTADO EXITOSAMENTE A WHATSAPP!');
+          this.isConnected = true;
+          this.currentQR = '';
+        }
+      });
 
-    this.sock.ev.on('creds.update', saveCreds);
+      // Cachear mensajes
+      this.sock.ev.on('messages.upsert', async (m) => {
+        for (const msg of m.messages) {
+          if (msg.message && msg.key.id) {
+            const msgId = `${msg.key.remoteJid}_${msg.key.id}`;
+            this.messageCache.set(msgId, msg.message);
+            
+            // Limpiar caché si excede límite
+            if (this.messageCache.size > this.MAX_CACHE_SIZE) {
+              const firstKey = this.messageCache.keys().next().value;
+              this.messageCache.delete(firstKey);
+            }
+          }
+
+          // Log de mensajes de grupos
+          if (!msg.key.fromMe && msg.key.remoteJid?.endsWith('@g.us')) {
+            console.log('📩 Mensaje recibido en grupo:', msg.key.remoteJid);
+          }
+        }
+      });
+      
+    } catch (error) {
+      console.error('❌ Error iniciando WhatsApp:', error.message);
+      console.log('💡 Intenta: rm -rf auth_info_baileys && npm run start:dev');
+    }
   }
 
   async sendWhatsAppMessage(groupId: string, message: string): Promise<boolean> {
     try {
-      if (!this.isConnected || !this.sock || !this.sock.user) return false;
-      await this.sock.sendMessage(groupId, { text: message });
-      console.log('✅ ' + whatsappConfig.messages.messageSent);
+      if (!this.isConnected || !this.sock || !this.sock.user) {
+        console.error('❌ WhatsApp no conectado');
+        return false;
+      }
+
+      // Enviar mensaje
+      const sentMsg = await this.sock.sendMessage(groupId, { text: message });
+
+      // Guardar en caché
+      if (sentMsg && sentMsg.key.id) {
+        const msgId = `${groupId}_${sentMsg.key.id}`;
+        this.messageCache.set(msgId, { conversation: message });
+      }
+
+      console.log('✅ Mensaje enviado correctamente');
       return true;
+
     } catch (error) {
-      console.error('❌ ' + whatsappConfig.messages.messageError, error);
+      console.error('❌ Error enviando mensaje:', error.message);
       return false;
     }
   }
 
   async sendImages(groupId: string, imageUrls: string[], captionPrefix = '') {
     for (let i = 0; i < imageUrls.length; i++) {
-      const url = imageUrls[i];
       try {
-        const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000 });
-        const buffer = Buffer.from(response.data, 'binary');
+        const response = await axios.get<ArrayBuffer>(imageUrls[i], { 
+          responseType: 'arraybuffer', 
+          timeout: 60000 
+        });
+        const buffer = Buffer.from(response.data);
+        
         await this.sock.sendMessage(groupId, {
           image: buffer,
           caption: "",
         });
-        console.log(`📤 Imagen ${i + 1} enviada`);
+
+        console.log(`✅ Imagen ${i + 1}/${imageUrls.length} enviada`);
+        
+        // Delay entre imágenes
+        if (i < imageUrls.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
+
       } catch (err) {
-        console.error(`❌ No se pudo enviar imagen ${i + 1}`, err.message);
+        console.error(`❌ Error enviando imagen ${i + 1}:`, err.message);
       }
     }
   }
@@ -137,19 +204,23 @@ export class AppService {
 
       const result = await this.sendWhatsAppMessage(whatsappConfig.groupId, message);
 
-      if (Array.isArray(data.fotos)) {
+      if (result) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      if (Array.isArray(data.fotos) && data.fotos.length > 0) {
         await this.sendImages(whatsappConfig.groupId, data.fotos);
       }
-      if (Array.isArray(data.fotosTractor)) {
-        await this.sendImages(whatsappConfig.groupId, data.fotosTractor,);
+      if (Array.isArray(data.fotosTractor) && data.fotosTractor.length > 0) {
+        await this.sendImages(whatsappConfig.groupId, data.fotosTractor);
       }
-      if (Array.isArray(data.fotosReeferCisterna)) {
-        await this.sendImages(whatsappConfig.groupId, data.fotosReeferCisterna,);
+      if (Array.isArray(data.fotosReeferCisterna) && data.fotosReeferCisterna.length > 0) {
+        await this.sendImages(whatsappConfig.groupId, data.fotosReeferCisterna);
       }
 
       return result;
     } catch (error) {
-      console.error('❌ Error procesando actualización de estado:', error);
+      console.error('❌ Error procesando actualización:', error);
       return false;
     }
   }
@@ -169,45 +240,34 @@ export class AppService {
 
   async restartConnection(): Promise<void> {
     try {
-      console.log('Iniciando proceso de reinicio...');
+      console.log('🔄 Reiniciando conexión...');
       this.isConnected = false;
       this.currentQR = '';
+      this.messageCache.clear();
 
-      // Intentar cerrar la conexión actual de manera segura
       if (this.sock) {
         try {
-          console.log('Cerrando conexión actual...');
-          try {
-            await this.sock.logout();
-          } catch (e) {
-            console.log('Error al cerrar sesión:', e.message);
-          }
-          this.sock = null;
-          console.log('Conexión cerrada exitosamente');
-        } catch (error) {
-          console.log('Error al cerrar la conexión:', error.message);
-          // Continuar con el proceso incluso si hay error al cerrar
+          await this.sock.logout();
+        } catch (e) {
+          console.log('Info: Error cerrando sesión (normal)');
         }
+        this.sock = null;
       }
 
-      // Limpiar archivos de autenticación
       const authPath = path.join(process.cwd(), 'auth_info_baileys');
       if (fs.existsSync(authPath)) {
-        console.log('Limpiando archivos de autenticación...');
         fs.rmSync(authPath, { recursive: true, force: true });
+        console.log('✅ Sesión limpiada');
       }
 
-      // Esperar un momento antes de reiniciar
-      console.log('Esperando antes de reiniciar...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      // Reiniciar la conexión
-      console.log('Iniciando nueva conexión...');
+      console.log('⏳ Esperando 10 segundos antes de reiniciar...');
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
       await this.initializeWhatsApp();
-      console.log('Proceso de reinicio completado');
+      console.log('✅ Reinicio completado');
     } catch (error) {
-      console.error('Error en el proceso de reinicio:', error);
-      throw new Error(`Error en el proceso de reinicio: ${error.message}`);
+      console.error('❌ Error reiniciando:', error.message);
+      throw error;
     }
   }
 }
