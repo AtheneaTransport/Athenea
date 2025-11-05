@@ -87,16 +87,30 @@ export class AppService {
             return; // NO RECONECTAR
           }
           
-          // Reconectar solo en casos específicos
-          if (statusCode === DisconnectReason.restartRequired) {
-            console.log('🔄 Reinicio requerido...');
-            setTimeout(() => this.initializeWhatsApp(), 3000);
-          } else if (statusCode === DisconnectReason.connectionLost) {
-            console.log('🔄 Conexión perdida, reconectando...');
-            setTimeout(() => this.initializeWhatsApp(), 5000);
-          } else if (statusCode !== DisconnectReason.loggedOut) {
-            console.log('💡 Escanea el QR en: http://localhost:3000/qr');
-          }
+          // Reconectar solo en casos 
+          
+          if (connection === 'close') {
+                const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+                this.isConnected = false;
+                this.currentQR = '';
+
+                console.log(`❌ Conexión cerrada (código: ${statusCode})`);
+
+                const shouldReconnect = 
+                  statusCode !== DisconnectReason.loggedOut && 
+                  statusCode !== 405;
+
+                if (shouldReconnect) {
+                  console.log('🔁 Intentando reconexión automática en 5 segundos...');
+                  setTimeout(() => this.initializeWhatsApp(), 5000);
+                } else if (statusCode === DisconnectReason.loggedOut) {
+                  console.log('⚠️ Sesión cerrada, escanea un nuevo QR.');
+                } else {
+                  console.log('🚫 Reconexión cancelada por código:', statusCode);
+                }
+              }
+
+          
         } else if (connection === 'open') {
           console.log('✅ ¡CONECTADO EXITOSAMENTE A WHATSAPP!');
           this.isConnected = true;
@@ -129,14 +143,29 @@ export class AppService {
       console.error('❌ Error iniciando WhatsApp:', error.message);
       console.log('💡 Intenta: rm -rf auth_info_baileys && npm run start:dev');
     }
+        setInterval(async () => {
+      if (this.isConnected && this.sock?.user) {
+        try {
+          await this.sock.sendPresenceUpdate('available');
+          console.log('💬 Keep-alive enviado a WhatsApp');
+        } catch (e) {
+          console.log('⚠️ Error en keep-alive:', e.message);
+        }
+      }
+    }, 1000 * 60 * 3);
   }
 
   async sendWhatsAppMessage(groupId: string, message: string): Promise<boolean> {
     try {
-      if (!this.isConnected || !this.sock || !this.sock.user) {
-        console.error('❌ WhatsApp no conectado');
-        return false;
-      }
+      if (!this.sock?.user || !this.isConnected) {
+            console.warn('⚠️ WhatsApp no está completamente conectado, reintentando...');
+            await this.initializeWhatsApp();
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            if (!this.isConnected) {
+              console.error('❌ No se pudo reconectar a WhatsApp');
+              return false;
+            }
+          }
 
       // Enviar mensaje
       const sentMsg = await this.sock.sendMessage(groupId, { text: message });
